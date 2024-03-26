@@ -1,18 +1,9 @@
 package pkg
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"encoding/xml"
 	"errors"
-	"fmt"
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/go-xmlfmt/xmlfmt"
-	"github.com/gofrs/uuid"
-	"github.com/masterzen/winrm"
-	dotnetxml "github.com/nijave/hyperv-csi/dotnet-xml"
-	"github.com/sergeymakinen/go-quote/windows"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -21,56 +12,19 @@ import (
 	"strings"
 )
 
-type remotePowerShellRunner interface {
+type remoteSshRunner interface {
 	RunWithContext(context.Context, string, io.Writer, io.Writer) (int, error)
 }
 
-type HypervCsiController struct {
+type LibvirtCsiController struct {
 	csi.IdentityServer
 	csi.ControllerServer
-	WinrmClient remotePowerShellRunner
-	VolumePath  string
+	SshClient remoteSshRunner
 }
 
-const driverName = "hyperv-csi.nijave.github.com"
+const driverName = "libvirt-csi.nijave.github.com"
 const driverVersion = "1.0.0"
 const defaultCapacity = 20 // GB
-const volumeFilePrefix = "pv-"
-
-const CliXmlPrefix = "#< CLIXML"
-
-func psCommand(cmd string) string {
-	cmd = winrm.Powershell(cmd)
-	return strings.Replace(cmd, "powershell.exe", "powershell.exe -NoProfile", 1)
-}
-
-type PSRemoteObjects struct {
-	XMLName xml.Name `xml:"Objs"`
-	Objects []string `xml:"S"`
-}
-
-func parseCliXml(xmlString string) string {
-	xmlString = strings.Trim(xmlString, "\r\n\t ")
-	if !strings.HasPrefix(xmlString, CliXmlPrefix) {
-		return xmlString
-	} else {
-		xmlString = strings.TrimPrefix(xmlString, CliXmlPrefix)
-	}
-
-	var psRemoteObjects PSRemoteObjects
-	err := xml.Unmarshal([]byte(xmlString), &psRemoteObjects)
-	if err != nil {
-		klog.Warning("couldn't unmarshal Powershell objects")
-		return xmlfmt.FormatXML(xmlString, "", "  ", false)
-	}
-
-	output := strings.Builder{}
-	for _, str := range psRemoteObjects.Objects {
-		output.WriteString(strings.Replace(dotnetxml.DecodeName(str), "\r\n", "\n", -1))
-	}
-
-	return strings.Trim(output.String(), "\r\n\t ")
-}
 
 type ExecResult struct {
 	ExitCode int
@@ -78,36 +32,13 @@ type ExecResult struct {
 	Error    error
 }
 
-func (s *HypervCsiController) psRun(ctx context.Context, cmd string) ExecResult {
-	var bytesOut bytes.Buffer
-	klog.V(8).InfoS("ps command", "command", cmd)
-	exit, err := s.WinrmClient.RunWithContext(ctx, psCommand(cmd), &bytesOut, &bytesOut)
-	psOutput := strings.Trim(bytesOut.String(), "\r\n\t ")
-	klog.V(8).InfoS("ps raw output", "rc", exit, "output", psOutput)
-	psOutput = parseCliXml(psOutput)
-
-	return ExecResult{
-		ExitCode: exit,
-		Output:   psOutput,
-		Error:    err,
-	}
-}
-
-func (s *HypervCsiController) makeVolumePath(name string, withExtension bool) string {
-	extension := ""
-	if withExtension {
-		extension = ".vhdx"
-	}
-	return windows.PSSingleQuote.Quote(s.VolumePath + "\\" + volumeFilePrefix + name + extension)
-}
-
 // IdentityServer
-func (s *HypervCsiController) Probe(ctx context.Context, request *csi.ProbeRequest) (*csi.ProbeResponse, error) {
+func (s *LibvirtCsiController) Probe(ctx context.Context, request *csi.ProbeRequest) (*csi.ProbeResponse, error) {
 	logRequest("identity probe", request)
 	return &csi.ProbeResponse{Ready: &wrapperspb.BoolValue{Value: true}}, nil
 }
 
-func (s *HypervCsiController) GetPluginInfo(ctx context.Context, request *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
+func (s *LibvirtCsiController) GetPluginInfo(ctx context.Context, request *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
 	logRequest("identity plugin info", request)
 	return &csi.GetPluginInfoResponse{
 		Name:          driverName,
@@ -115,7 +46,7 @@ func (s *HypervCsiController) GetPluginInfo(ctx context.Context, request *csi.Ge
 	}, nil
 }
 
-func (s *HypervCsiController) GetPluginCapabilities(ctx context.Context, request *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
+func (s *LibvirtCsiController) GetPluginCapabilities(ctx context.Context, request *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
 	logRequest("identity plugin capabilities", request)
 
 	return &csi.GetPluginCapabilitiesResponse{
@@ -132,26 +63,19 @@ func (s *HypervCsiController) GetPluginCapabilities(ctx context.Context, request
 }
 
 // ControllerServer
-func (s *HypervCsiController) ListVolumes(ctx context.Context, request *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+func (s *LibvirtCsiController) ListVolumes(ctx context.Context, request *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
 	logRequest("listing volumes", request)
 
-	listCommand := fmt.Sprintf("Get-Item %s | Select Name", s.makeVolumePath(volumeFilePrefix+"*", true))
-	result := s.psRun(ctx, listCommand)
+	// TODO libvirt-attach-storage -operation=list ?
+	// listCommand := fmt.Sprintf("Get-Item %s | Select Name", s.makeVolumePath(volumeFilePrefix+"*", true))
+	result := "a\rb\r"
 
-	if result.ExitCode != 0 || result.Error != nil {
-		if result.Error == nil {
-			result.Error = errors.New("powershell error")
-		}
-		klog.ErrorS(result.Error, "error listing volumes", "exitCode", result.ExitCode, "output", result.Output)
-		return nil, result.Error
-	}
-
-	volumeFiles := strings.Split(result.Output, "\r")
+	volumeFiles := strings.Split(result, "\r")
 	volumeList := make([]*csi.ListVolumesResponse_Entry, len(volumeFiles))
 	for i, volumeFile := range volumeFiles {
 		volumeList[i] = &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
-				VolumeId:           strings.TrimPrefix(strings.TrimSuffix(volumeFile, ".vhdx"), volumeFilePrefix),
+				VolumeId:           volumeFile, // TODO
 				CapacityBytes:      0,
 				VolumeContext:      nil,
 				ContentSource:      nil,
@@ -170,7 +94,7 @@ func (s *HypervCsiController) ListVolumes(ctx context.Context, request *csi.List
 	}, nil
 }
 
-func (s *HypervCsiController) CreateVolume(ctx context.Context, request *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+func (s *LibvirtCsiController) CreateVolume(ctx context.Context, request *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	logRequest("creating volume", request)
 
 	response := &csi.CreateVolumeResponse{
@@ -207,52 +131,29 @@ func (s *HypervCsiController) CreateVolume(ctx context.Context, request *csi.Cre
 
 	response.Volume.CapacityBytes = capacity
 
-	volumePath := s.makeVolumePath("temp-"+strings.Split(request.Name, "-")[1], true)
-	klog.InfoS("creating volume", "path", volumePath, "size", capacity)
-	// Make a temp volume based on the request ID and rename it to the VHD's GUID. Attached VHD can be located by last portion of GUID on host
-	createVolumeCommand := fmt.Sprintf(`$p = %s; $id = (New-VHD -Path $p -SizeBytes %d -Dynamic).DiskIdentifier.ToLower(); Move-Item $p (Join-Path -Path (Split-Path -Parent $p) -ChildPath "%s${id}.vhdx"); echo $id`, volumePath, capacity, volumeFilePrefix)
-	result := s.psRun(ctx, createVolumeCommand)
+	// TODO ssh host sudo libvirt-attach-storage -operation=create -size=capacity
+	//result := ""
 
-	if result.ExitCode != 0 {
-		klog.Error(result.Output)
-		return response, errors.New(fmt.Sprintf("command failed with exit code %d", result.ExitCode))
-	} else {
-		klog.Info(result.Output)
-	}
-
-	hopefullyUuid := strings.Trim(result.Output, "\r\n")
-	if _, err := uuid.FromString(hopefullyUuid); err != nil {
-		psError := errors.New("unexpected New-VHD output. Expected parseable uuid")
-		klog.ErrorS(psError, "message", hopefullyUuid)
-		return nil, psError
-	}
-
-	response.Volume.VolumeId = hopefullyUuid
-	return response, result.Error
+	response.Volume.VolumeId = "some uuid"
+	return response, nil
 }
 
-func (s *HypervCsiController) DeleteVolume(ctx context.Context, request *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
+func (s *LibvirtCsiController) DeleteVolume(ctx context.Context, request *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	logRequest("deleting volume", request)
 	response := &csi.DeleteVolumeResponse{}
 
-	deleteCommand := psCommand(fmt.Sprintf("Remove-Item -Force (%s+\"*\")", s.makeVolumePath(request.VolumeId, false)))
-	result := s.psRun(ctx, deleteCommand)
+	// TODO create libvirt-storage-attach -operation=delete
+	result := ""
 
-	if result.ExitCode != 0 {
-		err := errors.New("powershell error")
-		klog.ErrorS(err, "exitCode", result.ExitCode, "output", result.Output)
-		return response, err
-	}
-
-	if strings.Contains(result.Output, "failed to delete attached volume") {
+	if strings.Contains(result, "failed to delete attached volume") {
 		klog.Errorf("volume %s not found in volume list", request.VolumeId)
 		return response, errors.New("powershell error")
 	}
 
-	return response, result.Error
+	return response, nil
 }
 
-func (s *HypervCsiController) ValidateVolumeCapabilities(ctx context.Context, request *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
+func (s *LibvirtCsiController) ValidateVolumeCapabilities(ctx context.Context, request *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	response := &csi.ValidateVolumeCapabilitiesResponse{
 		Confirmed: nil,
 		Message:   "",
@@ -285,7 +186,7 @@ func (s *HypervCsiController) ValidateVolumeCapabilities(ctx context.Context, re
 	return response, nil
 }
 
-func (s *HypervCsiController) ControllerGetCapabilities(ctx context.Context, request *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
+func (s *LibvirtCsiController) ControllerGetCapabilities(ctx context.Context, request *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	response := &csi.ControllerGetCapabilitiesResponse{
 		Capabilities: []*csi.ControllerServiceCapability{
 			{
@@ -314,103 +215,46 @@ func (s *HypervCsiController) ControllerGetCapabilities(ctx context.Context, req
 	return response, nil
 }
 
-type vhdParentChild struct {
-	Vhd    string `json:"Path"`
-	Parent string `json:"ParentPath"`
-}
-
-func (s *HypervCsiController) ControllerPublishVolume(ctx context.Context, request *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
-	// TODO v1 attach VHD to VM (last one if there's snapshots...)
-	cmd := fmt.Sprintf("ConvertTo-Json @(Get-VHD (%s+\"*\") | Select ParentPath, Path)", s.makeVolumePath(request.VolumeId, false))
-	result := s.psRun(ctx, cmd)
-
-	if result.ExitCode != 0 {
-		klog.InfoS("powershell error", "output", result)
-		return nil, errors.New("powershell error")
-	}
-
-	var parentChildList []vhdParentChild
-	err := json.Unmarshal([]byte(result.Output), &parentChildList)
-	if err != nil {
-		klog.Warning("couldn't unmarshal parent-child vhd list json")
-		klog.InfoS("json unmarshal error", "output", result)
-		return nil, err
-	}
-	parentChild := map[string]string{}
-	for _, vhd := range parentChildList {
-		parentChild[vhd.Parent] = vhd.Vhd
-	}
-	lastParent := ""
-	for {
-		nextParent, ok := parentChild[lastParent]
-		if !ok {
-			break
-		}
-		lastParent = nextParent
-	}
-	klog.InfoS("attaching vhd", "vhd", lastParent, "node", request.NodeId)
-	// Add-VMHardDiskDrive -VMName vmubt2204kube04 -ControllerType SCSI -ControllerNumber 0 -Path "v:\\hyper-v\\virtual hard disks\\pvc-583055da-f7b4-474f-9bea-59d346c21509.vhdx"
-	cmd = fmt.Sprintf("Add-VMHardDiskDrive -VMName %s -ControllerType SCSI -ControllerNumber 0 -Path '%s'", request.NodeId, lastParent)
-	result = s.psRun(ctx, cmd)
-
-	// Idempotence
-	if strings.Contains(result.Output, "The disk is already connect to the virtual machine") {
-		result.ExitCode = 0
-		result.Error = nil
-	}
-
-	if result.ExitCode != 0 && result.Error == nil {
-		result.Error = errors.New("powershell error")
-	}
-	if result.Error != nil {
-		return nil, result.Error
-	}
+func (s *LibvirtCsiController) ControllerPublishVolume(ctx context.Context, request *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+	// TODO ssh host sudo libvirt-storage-attach -operation=attach -vm-name=... -pv-id=...
 
 	return &csi.ControllerPublishVolumeResponse{
 		PublishContext: map[string]string{},
 	}, nil
 }
 
-func (s *HypervCsiController) ControllerUnpublishVolume(ctx context.Context, request *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
-	// Get-VMHardDiskDrive -VMName vmubt2204kube04 | Where-Object {$_.Path -like "*pvc-583055da-f7b4-474f-9bea-59d346c21509*"} | Remove-VMHardDiskDrive
-	cmd := fmt.Sprintf("Get-VMHardDiskDrive -VMName %s | Where-Object {$_.Path -like \"*%s*\"} | Remove-VMHardDiskDrive", request.NodeId, request.VolumeId)
-	result := s.psRun(ctx, cmd)
-	if result.ExitCode != 0 && result.Error == nil {
-		result.Error = errors.New("powershell error")
-	}
-	if result.Error != nil {
-		return nil, result.Error
-	}
+func (s *LibvirtCsiController) ControllerUnpublishVolume(ctx context.Context, request *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+	// TODO ssh host sudo libvirt-storage-attach -operation=detach -vm-name=... -pv-id=...
 
 	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
 
-func (s *HypervCsiController) GetCapacity(ctx context.Context, request *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+func (s *LibvirtCsiController) GetCapacity(ctx context.Context, request *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	// TODO v2
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (s *HypervCsiController) ControllerExpandVolume(ctx context.Context, request *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+func (s *LibvirtCsiController) ControllerExpandVolume(ctx context.Context, request *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
 	// TODO v2
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (s *HypervCsiController) ControllerGetVolume(ctx context.Context, request *csi.ControllerGetVolumeRequest) (*csi.ControllerGetVolumeResponse, error) {
+func (s *LibvirtCsiController) ControllerGetVolume(ctx context.Context, request *csi.ControllerGetVolumeRequest) (*csi.ControllerGetVolumeResponse, error) {
 	// TODO v2
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (s *HypervCsiController) ListSnapshots(ctx context.Context, request *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+func (s *LibvirtCsiController) ListSnapshots(ctx context.Context, request *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
 	// TODO v3
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (s *HypervCsiController) CreateSnapshot(ctx context.Context, request *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
+func (s *LibvirtCsiController) CreateSnapshot(ctx context.Context, request *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
 	// TODO v3
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (s *HypervCsiController) DeleteSnapshot(ctx context.Context, request *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
+func (s *LibvirtCsiController) DeleteSnapshot(ctx context.Context, request *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
 	// TODO v3
 	return nil, status.Error(codes.Unimplemented, "")
 }

@@ -13,31 +13,29 @@ import (
 	"strings"
 )
 
-const hypervScsiControllerMax = 64
-const hypervScsiControllerReserved = 4
-const hypervScsiControllerAvailable = hypervScsiControllerMax - hypervScsiControllerReserved
+// TODO figure out max disks that can be attached to a libvirt domain. Looks like this used to be 26 but maybe
+// this has been increased since then
+const scsiControllerAvailable = 20
 const defaultFilesystem = "ext4"
-
-//const hostFilesystemMountPoint = "/host"
 
 func volumeDeviceSuffix(volumeId string) string {
 	return volumeId[strings.LastIndex(volumeId, "-")+1:]
 }
 
-type HypervCsiDriver struct {
+type LibvirtCsiDriver struct {
 	csi.NodeServer
 }
 
-func (s *HypervCsiDriver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+func (s *LibvirtCsiDriver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
 	logRequest("NodeGetInfo", req)
 	return &csi.NodeGetInfoResponse{
 		NodeId:             os.Getenv("KUBE_NODE_NAME"),
-		MaxVolumesPerNode:  hypervScsiControllerAvailable,
+		MaxVolumesPerNode:  scsiControllerAvailable,
 		AccessibleTopology: nil,
 	}, nil
 }
 
-func (s *HypervCsiDriver) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
+func (s *LibvirtCsiDriver) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
 	logRequest("NodeGetCapabilities", req)
 	// TODO... I don't think I support any of the listed items...
 	return &csi.NodeGetCapabilitiesResponse{
@@ -46,7 +44,7 @@ func (s *HypervCsiDriver) NodeGetCapabilities(ctx context.Context, req *csi.Node
 }
 
 // NodePublishVolume Mount a volume to the target path
-func (s *HypervCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+func (s *LibvirtCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	logRequest("NodePublishVolume", req)
 
 	response := &csi.NodePublishVolumeResponse{}
@@ -127,7 +125,7 @@ func (s *HypervCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodePu
 }
 
 // NodeUnpublishVolume Unmount a volume from the target path
-func (s *HypervCsiDriver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
+func (s *LibvirtCsiDriver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	logRequest("NodeUnpublishVolume", req)
 
 	response := &csi.NodeUnpublishVolumeResponse{}
@@ -150,25 +148,25 @@ func (s *HypervCsiDriver) NodeUnpublishVolume(ctx context.Context, req *csi.Node
 }
 
 // NodeStageVolume Not supported capability
-func (s *HypervCsiDriver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
+func (s *LibvirtCsiDriver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	logRequest("NodeStageVolume", req)
 	return nil, status.Error(codes.Unimplemented, "method NodeStageVolume not implemented")
 }
 
 // NodeUnstageVolume Not supported capability
-func (s *HypervCsiDriver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+func (s *LibvirtCsiDriver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	logRequest("NodeUnstageVolume", req)
 	return nil, status.Error(codes.Unimplemented, "method NodeUnstageVolume not implemented")
 }
 
 // NodeGetVolumeStats Not supported capability
-func (s *HypervCsiDriver) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
+func (s *LibvirtCsiDriver) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 	logRequest("NodeGetVolumeStats", req)
 	return nil, status.Error(codes.Unimplemented, "method NodeGetVolumeStats not implemented")
 }
 
 // NodeExpandVolume Not supported capability
-func (s *HypervCsiDriver) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
+func (s *LibvirtCsiDriver) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
 	logRequest("NodeExpandVolume", req)
 	return nil, status.Error(codes.Unimplemented, "method NodeExpandVolume not implemented")
 }

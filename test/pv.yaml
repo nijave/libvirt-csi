@@ -3,7 +3,7 @@ kind: PersistentVolume
 metadata:
   name: task-pv-volume
 spec:
-  storageClassName: hyperv
+  storageClassName: libvirt
   capacity:
     storage: 10Gi
   accessModes:

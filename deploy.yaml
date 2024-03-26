@@ -1,16 +1,15 @@
-# WINRM_PASSWORD="$(python3 -m keyring get hyperv01.homelab.somemissing.info administrator | tr -d '\n' | base64)" envsubst < deploy.yaml | kubectl apply -f -
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: hyperv-csi-system
+  name: libvirt-csi-system
 
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: hyperv-csi
-  namespace: hyperv-csi-system
+  name: libvirt-csi
+  namespace: libvirt-csi-system
 
 ---
 kind: ClusterRole
@@ -69,8 +68,8 @@ metadata:
   name: csi-provisioner-role
 subjects:
   - kind: ServiceAccount
-    name: hyperv-csi
-    namespace: hyperv-csi-system
+    name: libvirt-csi
+    namespace: libvirt-csi-system
 roleRef:
   kind: ClusterRole
   name: external-provisioner-runner
@@ -83,7 +82,7 @@ kind: Role
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: external-provisioner-cfg
-  namespace: hyperv-csi-system
+  namespace: libvirt-csi-system
 rules:
   # Only one of the following rules for endpoints or leases is required based on
   # what is set for `--leader-election-type`. Endpoints are deprecated in favor of Leases.
@@ -111,11 +110,11 @@ kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: csi-provisioner-role-cfg
-  namespace: hyperv-csi-system
+  namespace: libvirt-csi-system
 subjects:
   - kind: ServiceAccount
-    name: hyperv-csi
-    namespace: hyperv-csi-system
+    name: libvirt-csi
+    namespace: libvirt-csi-system
 roleRef:
   kind: Role
   name: external-provisioner-cfg
@@ -155,8 +154,8 @@ metadata:
   name: csi-attacher-role
 subjects:
   - kind: ServiceAccount
-    name: hyperv-csi
-    namespace: hyperv-csi-system
+    name: libvirt-csi
+    namespace: libvirt-csi-system
 roleRef:
   kind: ClusterRole
   name: external-attacher-runner
@@ -169,7 +168,7 @@ kind: Role
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: external-attacher-cfg
-  namespace: hyperv-csi-system
+  namespace: libvirt-csi-system
 rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -180,43 +179,43 @@ kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: csi-attacher-role-cfg
-  namespace: hyperv-csi-system
+  namespace: libvirt-csi-system
 subjects:
   - kind: ServiceAccount
-    name: hyperv-csi
-    namespace: hyperv-csi-system
+    name: libvirt-csi
+    namespace: libvirt-csi-system
 roleRef:
   kind: Role
   name: external-attacher-cfg
   apiGroup: rbac.authorization.k8s.io
 
 ---
-apiVersion: storage.k8s.io/v1
+apiVersion: storage.k8s.io/v1r
 kind: CSIDriver
 metadata:
-  name: hyperv-csi.nijave.github.com
+  name: libvirt-csi.nijave.github.com
 spec: {}
 
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: hyperv
+  name: libvirt
   annotations:
     "storageclass.kubernetes.io/is-default-class": "true"
-provisioner: hyperv-csi.nijave.github.com
+provisioner: libvirt-csi.nijave.github.com
 parameters:
-  type: hyperv
+  type: libvirt
 reclaimPolicy: Retain
 
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: hyperv-xfs
-provisioner: hyperv-csi.nijave.github.com
+  name: libvirt-xfs
+provisioner: libvirt-csi.nijave.github.com
 parameters:
-  type: hyperv-xfs
+  type: libvirt-xfs
   csi.storage.k8s.io/fstype: xfs
 reclaimPolicy: Retain
 
@@ -224,22 +223,22 @@ reclaimPolicy: Retain
 kind: Deployment
 apiVersion: apps/v1
 metadata:
-  name: hyperv-csi
-  namespace: hyperv-csi-system
+  name: libvirt-csi
+  namespace: libvirt-csi-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: hyperv-csi
+      app: libvirt-csi
   template:
     metadata:
       labels:
-        app: hyperv-csi
+        app: libvirt-csi
     spec:
-      serviceAccount: hyperv-csi
+      serviceAccount: libvirt-csi
       containers:
         - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v3.5.0
+          image: registry.k8s.io/sig-storage/csi-provisioner:v4.0.0
           args:
             - "--csi-address=$(ADDRESS)"
             - "--leader-election"
@@ -247,7 +246,7 @@ spec:
             - "--v=5"
           env:
             - name: ADDRESS
-              value: /run/csi/hyperv-csi.sock
+              value: /run/csi/libvirt-csi.sock
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
             - name: socket-dir
@@ -265,7 +264,7 @@ spec:
             timeoutSeconds: 10
             periodSeconds: 20
         - name: csi-attacher
-          image: registry.k8s.io/sig-storage/csi-attacher:v3.5.0
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.0.0
           args:
             - "--v=5"
             - "--csi-address=$(ADDRESS)"
@@ -278,7 +277,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: ADDRESS
-              value: /run/csi/hyperv-csi.sock
+              value: /run/csi/libvirt-csi.sock
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
             - name: socket-dir
@@ -295,59 +294,54 @@ spec:
             initialDelaySeconds: 10
             timeoutSeconds: 10
             periodSeconds: 20
-        - name: hyperv-csi
-          image: registry.apps.nickv.me/hyperv-csi:latest
+        - name: libvirt-csi
+          image: registry.apps.nickv.me/libvirt-csi:latest
           args:
             - "-v=8"
 #          command: [sleep, infinity]
           imagePullPolicy: Always
           env:
-            - name: WINRM_HOST
-              value: "https://hyperv01.homelab.somemissing.info:5986"
-            - name: WINRM_USER
+            - name: SSH_HOST
+              value: host.example
+            - name: SSH_USER
               value: administrator
-            - name: WINRM_PASSWORD
+            - name: SSH_HOST_KEY
+              value: some-host-key
+            - name: SSH_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: hyperv-csi
+                  name: libvirt-csi
                   key: WINRM_PASSWORD
-            - name: WINRM_CA_FILE_PATH
-              value: /var/run/secrets/winrm.pem
             - name: CSI_ADDRESS
-              value: /run/csi/hyperv-csi.sock
+              value: /run/csi/libvirt-csi.sock
           volumeMounts:
             - name: socket-dir
               mountPath: /run/csi
-            - name: secrets
-              readOnly: true
-              mountPath: /var/run/secrets/winrm.pem
-              subPath: WINRM_CA_FILE
       volumes:
         - name: socket-dir
           emptyDir:
         - name: secrets
           secret:
-              secretName: hyperv-csi
+              secretName: libvirt-csi
 
 ---
 kind: Secret
 apiVersion: v1
 metadata:
-  name: hyperv-csi
-  namespace: hyperv-csi-system
+  name: libvirt-csi
+  namespace: libvirt-csi-system
 type: Opaque
 data:
-  WINRM_PASSWORD: "${WINRM_PASSWORD}"
-  WINRM_CA_FILE: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURTekNDQWpPZ0F3SUJBZ0lRWUZ4b2kxVG5iNWxGcVp0QlZ3bVNlekFOQmdrcWhraUc5dzBCQVFzRkFEQVQKTVJFd0R3WURWUVFEREFob2VYQmxjbll3TVRBZUZ3MHlNakE1TWpjd01qQTJNek5hRncwek1qQTVNalF3TWpFMgpNelJhTUJNeEVUQVBCZ05WQkFNTUNHaDVjR1Z5ZGpBeE1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBCk1JSUJDZ0tDQVFFQXZYMy9TV3puYmNQOEQzclJjeHZ6MU85MWhZcm1xcnFaY3BjQmNudnJZYVE5aEdzKzhEM0sKYXdHRXpUKy9mek1xNUR3bmlLQitHMW41SUY1a2hoaGtQTnBsaVdmeTVjeFV0andCcjdMT29NZnFXb2xQbENoVwpROCtMU2VYbEJ3SmVVYjBjcitGd214U1Bxc0RFRk9wSlZnVUxrenc2VDZtcElBU0t2Yk5Tb2RaUVdmSXpQd2NLClF2REtnZ0s2Qk9ZMXQ1a0F2TENrcHQrWlduUnM4TDdzRkIvVWJHZmVWL1RtbUNkNlhKNll2OU1reUVjQ1AvUFAKT3puQlY2bngvZU9teldsbWxCbm1CbkpwMWY4c3hCbkJvWWEwd0x4WTA0UjRzd3d0cFVOR1JCdlZiZmViRkRZRAo3NkR6b2k0UWtUODZOYVdSNXhDb2hkM2xjQUVUM2Zqck53SURBUUFCbzRHYU1JR1hNQTRHQTFVZER3RUIvd1FFCkF3SUZvREFkQmdOVkhTVUVGakFVQmdnckJnRUZCUWNEQWdZSUt3WUJCUVVIQXdFd05nWURWUjBSQkM4d0xZSUkKYUhsd1pYSjJNREdDSVdoNWNHVnlkakF4TG1odmJXVnNZV0l1YzI5dFpXMXBjM05wYm1jdWFXNW1iekFQQmdOVgpIUk1CQWY4RUJUQURBUUgvTUIwR0ExVWREZ1FXQkJRZDBKVlFiYzJZTWp0OC9ZL05LUUtRNExlUnVUQU5CZ2txCmhraUc5dzBCQVFzRkFBT0NBUUVBYlg5YWxYSTJNYS90VG42ZDZIZjkvZGlBZmZjL3VYT3IraHFpdXRMelhwWDcKWjc2RHZ5azJQc2dYcUZCMWFQSmd1eU81V2hRRU5URjhsWUZnK09JaWVaU0w4aXZCNDB6WVp5dGtBaW9qNzB4UwpvUHNpRE1Qemp2RGVtdE5Qd09za2UvQjEweG8rRU55Q3FKOGplak5GK29MNHI0c2xxT3RnOHZOUjI1YkN5S2JnCkZlRWdQcjBUMVpPWi80ZVRyOVpsMkRCOE5QMUJiVGJ4TXV4VnNRaXZHQzJ6WXg5Mjd5dWhlTGlLd0kramZQZmcKbjR0S3FZVHg3dWg0UUIrNjdKQVJLTGJEWXR4YzVCa1d2bjBLY3E1aHBScVZSS1NuckxrSUFIaGtPYXIzZDBzSApPNU1oRm1TQnBzYlFySWF2NUhEMFBLa3ZCUUJqRTM2L09MQzljb3F1bHc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  SSH_PRIVATE_KEY: "ed25519 private key for ssh"
 
 ---
 kind: DaemonSet
 apiVersion: apps/v1
 metadata:
   labels:
-    app: hyperv-csi-node
-  name: hyperv-csi-node
-  namespace: hyperv-csi-system
+    app: libvirt-csi-node
+  name: libvirt-csi-node
+  namespace: libvirt-csi-system
 spec:
   updateStrategy:
     type: RollingUpdate
@@ -355,11 +349,11 @@ spec:
       maxUnavailable: 10
   selector:
     matchLabels:
-      app: hyperv-csi-node
+      app: libvirt-csi-node
   template:
     metadata:
       labels:
-        app: hyperv-csi-node
+        app: libvirt-csi-node
     spec:
       containers:
       - name: node-driver-registrar
@@ -375,8 +369,8 @@ spec:
               fieldRef:
                 fieldPath: spec.nodeName
           - name: REGISTRATION_PATH
-            value: /var/lib/kubelet/plugins/hyperv-csi.nijave.github.com/csi.sock
-        image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0
+            value: /var/lib/kubelet/plugins/libvirt-csi.nijave.github.com/csi.sock
+        image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0
         imagePullPolicy: Always
         securityContext:
           privileged: true
@@ -385,8 +379,8 @@ spec:
             mountPath: /run/csi
           - name: registration-dir
             mountPath: /registration
-      - name: hyperv-csi-node
-        image: registry.apps.nickv.me/hyperv-csi:latest
+      - name: libvirt-csi-node
+        image: registry.apps.nickv.me/libvirt-csi:latest
         imagePullPolicy: Always
         args:
           - -grpc-service=driver
@@ -425,7 +419,7 @@ spec:
             type: Directory
         - name: plugin-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/hyperv-csi.nijave.github.com
+            path: /var/lib/kubelet/plugins/libvirt-csi.nijave.github.com
             type: DirectoryOrCreate
         - name: registration-dir
           hostPath:
