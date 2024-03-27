@@ -2,8 +2,9 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/bitfield/script"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -17,6 +18,15 @@ import (
 // this has been increased since then
 const scsiControllerAvailable = 20
 const defaultFilesystem = "ext4"
+
+type BlockDevice struct {
+	Name   string `json:"name"`
+	Serial string `json:"serial"`
+}
+
+type BlockDeviceList struct {
+	BlockDevices []BlockDevice `json:"blockdevices"`
+}
 
 func volumeDeviceSuffix(volumeId string) string {
 	return volumeId[strings.LastIndex(volumeId, "-")+1:]
@@ -57,19 +67,36 @@ func (s *LibvirtCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodeP
 	klog.V(8).Infof("using fstype %s", fsType)
 
 	// Find block device from pvc ID (vhd id)
-	// TODO probably convert this to not use bitfield/script since that's the only place the dep is used
-	volumePath, err := script.ListFiles(fmt.Sprintf("/dev/disk/by-id/wwn-*%s", volumeDeviceSuffix(req.VolumeId))).First(1).String()
-	volumePath = strings.TrimRight(volumePath, " \t\n\r")
+	blockDeviceCmd := exec.CommandContext(ctx, "lsblk", "--nodeps", "-o", "serial,name", "-J", "--include", "8")
+	blockDeviceJson, err := blockDeviceCmd.Output()
 	if err != nil {
-		klog.ErrorS(err, "Couldn't find device for volume", "volumeId", req.VolumeId, "output", volumePath)
+		return response, err
+	}
+	var blockDevices BlockDeviceList
+	err = json.Unmarshal(blockDeviceJson, &blockDevices)
+	if err != nil {
 		return response, err
 	}
 
+	var targetDevice *string
+	volumeSerial := strings.Replace(strings.TrimPrefix(req.VolumeId, "pv-"), "-", "", -1)
+	for _, blockDevice := range blockDevices.BlockDevices {
+		if blockDevice.Serial == volumeSerial {
+			targetDevice = &blockDevice.Name
+		}
+	}
+
+	if targetDevice == nil {
+		klog.ErrorS(err, "couldn't find device for volume", "volumeSerial", volumeSerial, "blockDevices", blockDevices.BlockDevices, "cmdOutput", blockDeviceJson)
+		return response, errors.New("device not found")
+	}
+
 	// Partition block device, if needed
-	partitionPath := volumePath + "-part1"
+	devicePath := fmt.Sprintf("/dev/%s", *targetDevice)
+	partitionPath := fmt.Sprintf("%s%d", devicePath, 1)
 	if _, err = os.Stat(partitionPath); err != nil {
 		klog.InfoS("partitioning pv", "pv", req.VolumeId)
-		shellCommand := []string{volumePath, "--script", "-a", "optimal", "mklabel", "gpt", "mkpart", "primary", fsType, "0%", "100%"}
+		shellCommand := []string{devicePath, "--script", "-a", "optimal", "mklabel", "gpt", "mkpart", "primary", fsType, "0%", "100%"}
 		if out, partErr := exec.CommandContext(ctx, "parted", shellCommand...).Output(); partErr != nil {
 			klog.ErrorS(partErr, "failed to partition disk", "command", shellCommand, "output", string(out))
 			return response, partErr

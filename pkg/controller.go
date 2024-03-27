@@ -2,24 +2,26 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/alessio/shellescape"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
-	"io"
 	"k8s.io/klog/v2"
 	"strings"
 )
 
 type remoteSshRunner interface {
-	RunWithContext(context.Context, string, io.Writer, io.Writer) (int, error)
+	RunCommand(string) (string, string, error)
 }
 
 type LibvirtCsiController struct {
 	csi.IdentityServer
 	csi.ControllerServer
-	SshClient remoteSshRunner
+	CommandRunner remoteSshRunner
 }
 
 const driverName = "libvirt-csi.nijave.github.com"
@@ -32,7 +34,14 @@ type ExecResult struct {
 	Error    error
 }
 
+type VolumeInfo struct {
+	Id       string
+	Capacity int64
+	Owners   []string
+}
+
 // IdentityServer
+
 func (s *LibvirtCsiController) Probe(ctx context.Context, request *csi.ProbeRequest) (*csi.ProbeResponse, error) {
 	logRequest("identity probe", request)
 	return &csi.ProbeResponse{Ready: &wrapperspb.BoolValue{Value: true}}, nil
@@ -63,29 +72,40 @@ func (s *LibvirtCsiController) GetPluginCapabilities(ctx context.Context, reques
 }
 
 // ControllerServer
+
 func (s *LibvirtCsiController) ListVolumes(ctx context.Context, request *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
 	logRequest("listing volumes", request)
 
-	// TODO libvirt-attach-storage -operation=list ?
-	// listCommand := fmt.Sprintf("Get-Item %s | Select Name", s.makeVolumePath(volumeFilePrefix+"*", true))
-	result := "a\rb\r"
+	var volumeInfo []VolumeInfo
+	stdout, stderr, err := s.CommandRunner.RunCommand(fmt.Sprintf(
+		"sudo libvirt-storage-attach -operation=list",
+	))
 
-	volumeFiles := strings.Split(result, "\r")
-	volumeList := make([]*csi.ListVolumesResponse_Entry, len(volumeFiles))
-	for i, volumeFile := range volumeFiles {
-		volumeList[i] = &csi.ListVolumesResponse_Entry{
+	if err != nil {
+		klog.InfoS("error running libvirt-storage-attach", "operation", "list", "stdout", stdout, "stderr", stderr, "err", err.Error())
+		return nil, err
+	}
+
+	err = json.Unmarshal([]byte(stdout), &volumeInfo)
+	if err != nil {
+		return nil, err
+	}
+
+	var volumeList []*csi.ListVolumesResponse_Entry
+	for _, volume := range volumeInfo {
+		volumeList = append(volumeList, &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
-				VolumeId:           volumeFile, // TODO
-				CapacityBytes:      0,
+				VolumeId:           volume.Id,
+				CapacityBytes:      volume.Capacity,
 				VolumeContext:      nil,
 				ContentSource:      nil,
 				AccessibleTopology: nil,
 			},
 			Status: &csi.ListVolumesResponse_VolumeStatus{
-				PublishedNodeIds: nil, // OPTIONAL
-				VolumeCondition:  nil, // OPTIONAL
+				PublishedNodeIds: volume.Owners, // OPTIONAL
+				VolumeCondition:  nil,           // OPTIONAL
 			},
-		}
+		})
 	}
 
 	return &csi.ListVolumesResponse{
@@ -131,26 +151,49 @@ func (s *LibvirtCsiController) CreateVolume(ctx context.Context, request *csi.Cr
 
 	response.Volume.CapacityBytes = capacity
 
-	// TODO ssh host sudo libvirt-attach-storage -operation=create -size=capacity
-	//result := ""
+	stdout, stderr, err := s.CommandRunner.RunCommand(fmt.Sprintf(
+		"sudo libvirt-storage-attach -operation=create -size=%d",
+		request.CapacityRange.RequiredBytes,
+	))
 
-	response.Volume.VolumeId = "some uuid"
-	return response, nil
+	hopefullyVolumeId := strings.TrimSpace(stdout)
+
+	if !strings.HasPrefix(hopefullyVolumeId, "pv-") || err != nil {
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		klog.InfoS("error running libvirt-storage-attach", "operation", "create", "stdout", stdout, "stderr", stderr, "err", errMsg, "parsedVolumeId", hopefullyVolumeId)
+		err = errors.New("unknown error creating volume")
+	} else {
+		response.Volume.VolumeId = hopefullyVolumeId
+	}
+
+	return response, err
 }
 
 func (s *LibvirtCsiController) DeleteVolume(ctx context.Context, request *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	logRequest("deleting volume", request)
 	response := &csi.DeleteVolumeResponse{}
 
-	// TODO create libvirt-storage-attach -operation=delete
-	result := ""
+	stdout, stderr, err := s.CommandRunner.RunCommand(fmt.Sprintf(
+		"sudo libvirt-storage-attach -operation=delete -pv-id=%s",
+		shellescape.Quote(request.VolumeId),
+	))
 
-	if strings.Contains(result, "failed to delete attached volume") {
-		klog.Errorf("volume %s not found in volume list", request.VolumeId)
-		return response, errors.New("powershell error")
+	if err != nil {
+		klog.InfoS("error running libvirt-storage-attach", "operation", "delete", "stdout", stdout, "stderr", stderr, "err", err.Error(), "pv-id", request.VolumeId)
 	}
 
-	return response, nil
+	// I0325 21:29:29.098228  774510 commands.go:213] "command output" stdout="" stderr="  Failed to find logical volume \"fedora_localhost-live/pv-a61a74d2-ab75-458b-bf1b-0216923ca686\"" err="exit status 5"
+	if strings.HasPrefix(strings.TrimSpace(stderr), "Failed to find logical volume") {
+		klog.Errorf("volume %s not found", request.VolumeId)
+		return response, errors.New("volume not found")
+	}
+
+	// TODO are there any other special errors like "volume still attached" ?
+
+	return response, err
 }
 
 func (s *LibvirtCsiController) ValidateVolumeCapabilities(ctx context.Context, request *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
@@ -216,17 +259,37 @@ func (s *LibvirtCsiController) ControllerGetCapabilities(ctx context.Context, re
 }
 
 func (s *LibvirtCsiController) ControllerPublishVolume(ctx context.Context, request *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
-	// TODO ssh host sudo libvirt-storage-attach -operation=attach -vm-name=... -pv-id=...
+	logRequest("publish volume", request)
+
+	stdout, stderr, err := s.CommandRunner.RunCommand(fmt.Sprintf(
+		"sudo libvirt-storage-attach -operation=attach -pv-id=%s -vm-name=%s",
+		shellescape.Quote(request.VolumeId),
+		shellescape.Quote(request.NodeId),
+	))
+
+	if err != nil {
+		klog.InfoS("error running libvirt-storage-attach", "operation", "attach", "stdout", stdout, "stderr", stderr, "err", err.Error(), "pv-id", request.VolumeId)
+	}
 
 	return &csi.ControllerPublishVolumeResponse{
 		PublishContext: map[string]string{},
-	}, nil
+	}, err
 }
 
 func (s *LibvirtCsiController) ControllerUnpublishVolume(ctx context.Context, request *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
-	// TODO ssh host sudo libvirt-storage-attach -operation=detach -vm-name=... -pv-id=...
+	logRequest("unpublish volume", request)
 
-	return &csi.ControllerUnpublishVolumeResponse{}, nil
+	stdout, stderr, err := s.CommandRunner.RunCommand(fmt.Sprintf(
+		"sudo libvirt-storage-attach -operation=detach -pv-id=%s -vm-name=%s",
+		shellescape.Quote(request.VolumeId),
+		shellescape.Quote(request.NodeId),
+	))
+
+	if err != nil {
+		klog.InfoS("error running libvirt-storage-attach", "operation", "detach", "stdout", stdout, "stderr", stderr, "err", err.Error(), "pv-id", request.VolumeId)
+	}
+
+	return &csi.ControllerUnpublishVolumeResponse{}, err
 }
 
 func (s *LibvirtCsiController) GetCapacity(ctx context.Context, request *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {

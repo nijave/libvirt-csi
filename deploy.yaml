@@ -190,7 +190,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-apiVersion: storage.k8s.io/v1r
+apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
   name: libvirt-csi.nijave.github.com
@@ -305,18 +305,21 @@ spec:
               value: host.example
             - name: SSH_USER
               value: administrator
-            - name: SSH_HOST_KEY
-              value: some-host-key
+            - name: SSH_KNOWN_HOSTS
+              value: /var/lib/secrets/known_hosts
             - name: SSH_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
                   name: libvirt-csi
-                  key: WINRM_PASSWORD
+                  key: SSH_PRIVATE_KEY
             - name: CSI_ADDRESS
               value: /run/csi/libvirt-csi.sock
           volumeMounts:
             - name: socket-dir
               mountPath: /run/csi
+            - name: secrets
+              mountPath: /var/lib/secrets/known_hosts
+              subPath: SSH_KNOWN_HOSTS
       volumes:
         - name: socket-dir
           emptyDir:
@@ -333,6 +336,7 @@ metadata:
 type: Opaque
 data:
   SSH_PRIVATE_KEY: "ed25519 private key for ssh"
+  SSH_KNOWN_HOSTS: "known hosts file contents"
 
 ---
 kind: DaemonSet
@@ -396,6 +400,9 @@ spec:
         volumeMounts:
           - name: device-dir
             mountPath: /dev
+          - name: udev-dir
+            mountPath: /run/udev/data
+            readOnly: true
           - name: host-root
             mountPath: /host
           - name: kubelet-dir
@@ -408,6 +415,10 @@ spec:
         - name: device-dir
           hostPath:
             path: /dev
+            type: Directory
+        - name: udev-dir
+          hostPath:
+            path: /run/udev/data
             type: Directory
         - name: host-root
           hostPath:

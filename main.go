@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/nijave/libvirt-csi/internal"
 	"github.com/nijave/libvirt-csi/pkg"
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
@@ -10,10 +11,23 @@ import (
 	"os"
 )
 
-func initController(grpcServer *grpc.Server) {
+func mustGetEnv(name string) string {
+	value := os.Getenv(name)
+	if len(value) == 0 {
+		klog.Fatalf("required environment variable %s isn't set", name)
+	}
+	return value
+}
 
+func initController(grpcServer *grpc.Server) {
 	csiController := &pkg.LibvirtCsiController{
-		SshClient: nil,
+		//SshHost:   mustGetEnv("SSH_HOST"),
+		CommandRunner: &internal.SshRunner{
+			Host:       mustGetEnv("SSH_HOST"),
+			User:       mustGetEnv("SSH_USER"),
+			KnownHosts: mustGetEnv("SSH_KNOWN_HOSTS"),
+			PrivateKey: mustGetEnv("SSH_PRIVATE_KEY"),
+		},
 	}
 
 	csi.RegisterControllerServer(grpcServer, csiController)
