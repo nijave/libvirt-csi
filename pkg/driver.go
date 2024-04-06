@@ -78,21 +78,23 @@ func (s *LibvirtCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodeP
 		return response, err
 	}
 
-	var targetDevice *string
+	var targetDevice string
 	volumeSerial := strings.Replace(strings.TrimPrefix(req.VolumeId, "pv-"), "-", "", -1)
 	for _, blockDevice := range blockDevices.BlockDevices {
+		klog.InfoS("searching for device", "volumeId", req.VolumeId, "volumeSerial", volumeSerial, "blockSerial", blockDevice.Serial)
 		if blockDevice.Serial == volumeSerial {
-			targetDevice = &blockDevice.Name
+			targetDevice = blockDevice.Name
+			break
 		}
 	}
 
-	if targetDevice == nil {
+	if targetDevice == "" {
 		klog.ErrorS(err, "couldn't find device for volume", "volumeSerial", volumeSerial, "blockDevices", blockDevices.BlockDevices, "cmdOutput", blockDeviceJson)
 		return response, errors.New("device not found")
 	}
 
 	// Partition block device, if needed
-	devicePath := fmt.Sprintf("/dev/%s", *targetDevice)
+	devicePath := fmt.Sprintf("/dev/%s", targetDevice)
 	partitionPath := fmt.Sprintf("%s%d", devicePath, 1)
 	if _, err = os.Stat(partitionPath); err != nil {
 		klog.InfoS("partitioning pv", "pv", req.VolumeId)
