@@ -238,7 +238,7 @@ spec:
       serviceAccount: libvirt-csi
       containers:
         - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v4.0.0
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
           args:
             - "--csi-address=$(ADDRESS)"
             - "--leader-election"
@@ -247,7 +247,7 @@ spec:
           env:
             - name: ADDRESS
               value: /run/csi/libvirt-csi.sock
-          imagePullPolicy: "IfNotPresent"
+          imagePullPolicy: IfNotPresent
           volumeMounts:
             - name: socket-dir
               mountPath: /run/csi
@@ -264,7 +264,7 @@ spec:
             timeoutSeconds: 10
             periodSeconds: 20
         - name: csi-attacher
-          image: registry.k8s.io/sig-storage/csi-attacher:v4.0.0
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.6.1
           args:
             - "--v=5"
             - "--csi-address=$(ADDRESS)"
@@ -278,7 +278,7 @@ spec:
                   fieldPath: metadata.name
             - name: ADDRESS
               value: /run/csi/libvirt-csi.sock
-          imagePullPolicy: "IfNotPresent"
+          imagePullPolicy: IfNotPresent
           volumeMounts:
             - name: socket-dir
               mountPath: /run/csi
@@ -294,7 +294,7 @@ spec:
             initialDelaySeconds: 10
             timeoutSeconds: 10
             periodSeconds: 20
-        - name: libvirt-csi
+        - name: libvirt-csi-controller
           image: registry.apps.nickv.me/libvirt-csi:latest
           args:
             - "-v=8"
@@ -326,6 +326,14 @@ spec:
         - name: secrets
           secret:
               secretName: libvirt-csi
+      priorityClassName: system-cluster-critical
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
 
 ---
 kind: Secret
@@ -374,8 +382,8 @@ spec:
                 fieldPath: spec.nodeName
           - name: REGISTRATION_PATH
             value: /var/lib/kubelet/plugins/libvirt-csi.nijave.github.com/csi.sock
-        image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0
-        imagePullPolicy: Always
+        image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0 # v2.11.0 image isn't published
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         volumeMounts:
@@ -436,3 +444,11 @@ spec:
           hostPath:
             path: /var/lib/kubelet/plugins_registry
             type: Directory
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
