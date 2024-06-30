@@ -1,6 +1,6 @@
-ARG BASE_IMAGE=docker.io/library/golang:1.21-bookworm
+ARG BASE_IMAGE=docker.io/library/golang:1.22-bookworm
 
-FROM $BASE_IMAGE as builder
+FROM $BASE_IMAGE AS builder
 COPY . /src
 WORKDIR /src
 RUN --mount=type=cache,target=/root/.cache/go-build go build .

@@ -11,6 +11,8 @@ import (
 	"k8s.io/klog/v2"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -28,10 +30,6 @@ type BlockDeviceList struct {
 	BlockDevices []BlockDevice `json:"blockdevices"`
 }
 
-func volumeDeviceSuffix(volumeId string) string {
-	return volumeId[strings.LastIndex(volumeId, "-")+1:]
-}
-
 type LibvirtCsiDriver struct {
 	csi.NodeServer
 }
@@ -46,10 +44,18 @@ func (s *LibvirtCsiDriver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfo
 }
 
 func (s *LibvirtCsiDriver) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
-	logRequest("NodeGetCapabilities", req)
-	// TODO... I don't think I support any of the listed items...
+	//logRequest("NodeGetCapabilities", req)
+	// https://kubernetes-csi.github.io/docs/developing.html#capabilities
 	return &csi.NodeGetCapabilitiesResponse{
-		Capabilities: []*csi.NodeServiceCapability{},
+		Capabilities: []*csi.NodeServiceCapability{
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+					},
+				},
+			},
+		},
 	}, nil
 }
 
@@ -140,14 +146,23 @@ func (s *LibvirtCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodeP
 	// Mount partition
 	klog.InfoS("running command", "command", mountCommand)
 	out, err = exec.CommandContext(ctx, "mount", mountCommand...).Output()
-	// TODO idempotence see https://github.com/container-storage-interface/spec/blob/master/spec.md#nodepublishvolume-errors
 	if err != nil {
-		klog.ErrorS(err, "failed to mount volume", "output", string(out))
-		if err.Error() == "exit status 32" {
-			return response, status.Error(codes.NotFound, "volume not found")
-		} else {
-			klog.ErrorS(err, "volume mount error", "output", out)
+		var exitErr *exec.ExitError
+		stderrMsg := "null"
+		if errors.As(err, &exitErr) {
+			stderrMsg = string(exitErr.Stderr)
 		}
+		klog.ErrorS(err, "failed to mount volume", "stdout", string(out), "stderr", stderrMsg)
+
+		if err.Error() == "exit status 32" {
+			if strings.Contains(stderrMsg, " already mounted on ") {
+				return response, nil
+			} else if strings.HasSuffix(stderrMsg, " does not exist.\n") {
+				return response, status.Error(codes.NotFound, "volume not found")
+			}
+		}
+
+		klog.ErrorS(err, "volume mount error", "output", out)
 	}
 
 	return response, err
@@ -190,8 +205,47 @@ func (s *LibvirtCsiDriver) NodeUnstageVolume(ctx context.Context, req *csi.NodeU
 
 // NodeGetVolumeStats Not supported capability
 func (s *LibvirtCsiDriver) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
-	logRequest("NodeGetVolumeStats", req)
-	return nil, status.Error(codes.Unimplemented, "method NodeGetVolumeStats not implemented")
+	// These requests are pretty frequent
+	//logRequest("NodeGetVolumeStats", req)
+
+	out, err := exec.CommandContext(ctx, "df", "-B", "1", "--output=iavail,itotal,iused,avail,size,used", req.GetStagingTargetPath()).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && strings.HasSuffix(string(exitErr.Stderr), "No such file or directory\n") {
+			return &csi.NodeGetVolumeStatsResponse{}, status.Error(codes.NotFound, "volume not found")
+		}
+		klog.Error(err)
+	}
+
+	statsLine := strings.Split(string(out), "\n")[1]
+	re := regexp.MustCompile("\\s+")
+	stats := re.Split(statsLine, -1)
+	klog.InfoS("stats line", "volume", req.GetStagingTargetPath(), "line", stats)
+
+	inodesAvail, _ := strconv.ParseInt(stats[0], 10, 64)
+	inodesTotal, _ := strconv.ParseInt(stats[1], 10, 64)
+	inodesUsed, _ := strconv.ParseInt(stats[2], 10, 64)
+
+	bytesAvail, _ := strconv.ParseInt(stats[3], 10, 64)
+	bytesTotal, _ := strconv.ParseInt(stats[4], 10, 64)
+	bytesUsed, _ := strconv.ParseInt(stats[5], 10, 64)
+
+	response := &csi.NodeGetVolumeStatsResponse{
+		Usage: []*csi.VolumeUsage{{
+			Unit:      csi.VolumeUsage_INODES,
+			Available: inodesAvail,
+			Total:     inodesTotal,
+			Used:      inodesUsed,
+		}, {
+			Unit:      csi.VolumeUsage_BYTES,
+			Available: bytesAvail,
+			Total:     bytesTotal,
+			Used:      bytesUsed,
+		}},
+		VolumeCondition: &csi.VolumeCondition{Abnormal: false, Message: ""},
+	}
+
+	return response, nil
 }
 
 // NodeExpandVolume Not supported capability
