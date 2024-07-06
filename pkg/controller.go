@@ -117,11 +117,18 @@ func (s *LibvirtCsiController) ListVolumes(ctx context.Context, request *csi.Lis
 func (s *LibvirtCsiController) CreateVolume(ctx context.Context, request *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	logRequest("creating volume", request)
 
+	volumeGroup := ""
+	if vg, ok := request.Parameters["volumeGroup"]; ok {
+		volumeGroup = vg
+	}
+
 	response := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:           "",
-			CapacityBytes:      0,
-			VolumeContext:      nil,
+			VolumeId:      "",
+			CapacityBytes: 0,
+			VolumeContext: map[string]string{
+				"volumeGroup": volumeGroup,
+			},
 			ContentSource:      nil,
 			AccessibleTopology: nil,
 		},
@@ -151,10 +158,13 @@ func (s *LibvirtCsiController) CreateVolume(ctx context.Context, request *csi.Cr
 
 	response.Volume.CapacityBytes = capacity
 
-	stdout, stderr, err := s.CommandRunner.RunCommand(fmt.Sprintf(
-		"sudo libvirt-storage-attach -operation=create -size=%d",
+	createPvCommand := fmt.Sprintf(
+		"sudo libvirt-storage-attach -operation=create -volume-group=%s -size=%d",
+		volumeGroup,
 		request.CapacityRange.RequiredBytes,
-	))
+	)
+	klog.InfoS("creating volume", "command", createPvCommand)
+	stdout, stderr, err := s.CommandRunner.RunCommand(createPvCommand)
 
 	hopefullyVolumeId := strings.TrimSpace(stdout)
 
