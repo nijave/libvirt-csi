@@ -73,7 +73,7 @@ func (s *LibvirtCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodeP
 	klog.V(8).Infof("using fstype %s", fsType)
 
 	// Find block device from pvc ID (vhd id)
-	blockDeviceCmd := exec.CommandContext(ctx, "lsblk", "--nodeps", "-o", "serial,name", "-J", "--include", "8")
+	blockDeviceCmd := exec.CommandContext(ctx, "lsblk", "--nodeps", "-o", "serial,name", "-J", "--include", "8,254")
 	blockDeviceJson, err := blockDeviceCmd.Output()
 	if err != nil {
 		return response, err
@@ -88,7 +88,8 @@ func (s *LibvirtCsiDriver) NodePublishVolume(ctx context.Context, req *csi.NodeP
 	volumeSerial := strings.Replace(strings.TrimPrefix(req.VolumeId, "pv-"), "-", "", -1)
 	for _, blockDevice := range blockDevices.BlockDevices {
 		klog.InfoS("searching for device", "volumeId", req.VolumeId, "volumeSerial", volumeSerial, "blockSerial", blockDevice.Serial)
-		if blockDevice.Serial == volumeSerial {
+		// Some serial numbers are truncated
+		if strings.HasPrefix(volumeSerial, blockDevice.Serial) {
 			targetDevice = blockDevice.Name
 			break
 		}
