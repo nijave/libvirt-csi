@@ -373,6 +373,7 @@ spec:
           - --csi-address=$(ADDRESS)
           - --kubelet-registration-path=$(REGISTRATION_PATH)
           - --v=5
+          - --timeout=60s
         env:
           - name: ADDRESS
             value: /run/csi/csi.sock
